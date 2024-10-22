@@ -1,0 +1,4 @@
+(executable
+ (public_name dns_server)
+ (name main)
+ (libraries dns_server))
