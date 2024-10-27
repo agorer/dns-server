@@ -16,7 +16,7 @@
 (package
  (name dns_server)
  (synopsis "Simple DNS server")
- (depends ocaml dune)
+ (depends bytestring ocaml dune)
  (tags
   (net udp dns)))
 
