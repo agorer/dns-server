@@ -8,6 +8,7 @@
  (github agorer/dns-server))
 
 (authors "Juanjo Molinero")
+(maintainers "Juanjo Molinero")
 
 (license MIT)
 
@@ -16,7 +17,7 @@
 (package
  (name dns_server)
  (synopsis "Simple DNS server")
- (depends bytestring ocaml dune)
+ (depends bitstring ocaml dune)
  (tags
   (net udp dns)))
 

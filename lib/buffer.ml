@@ -59,43 +59,7 @@ let read_u32 buf =
     let result = Int32.unsigned_to_int (
         Bytes.get_int32_be buf.data buf.position) in
     ok ({ buf with position = buf.position + 4}, (Option.get result))
-
-module IntSet = Set.Make(Int)
-[@@deriving show]
-
-let rec read_qname buf =
-  let* is_jump = is_jump buf in
-  if is_jump then
-    let* position = get_jump buf IntSet.empty in
-    let* _, name = read_name { buf with position } "" "" in
-    ok({ buf with position = position + 2}, name)
-  else
-    read_name buf "" ""
-and get_jump buf jumps =
-  let* is_jump = is_jump buf in
-  if is_jump then
-    let* next = get_u16 buf in
-    let hint = (Char.code '\xC0') lsl 8 in
-    let position = next lxor hint in
-    if IntSet.mem position jumps then
-      error "Cycle detected when reading qname"
-    else
-      get_jump { buf with position } (IntSet.add position jumps)
-  else
-    ok buf.position
-and is_jump buf =
-  let* next = get_u16 buf in
-  let hint = (Char.code '\xC0') lsl 8 in
-  ok ((next land hint) = hint)
-and read_name buf name separator =
-  let _null_byte = '\x00' in
-  let* buf, next = read buf in
-  match next with
-  | '\x00' -> ok (buf, name)
-  | length ->
-    let length = Char.code length in
-    let* part = get_range buf buf.position length in
-    let part = separator ^ (String.of_bytes part) in
-    let buf = { buf with position = buf.position + length } in
-    read_name buf (name ^ part) "."
   
+let of_bytestring bstr =
+  let (data, _, _) = bstr in
+  { data; position = 0 }

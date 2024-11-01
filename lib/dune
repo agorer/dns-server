@@ -1,5 +1,5 @@
 (library
  (name dns_server)
- (inline_tests)
- (preprocess (pps ppx_inline_test ppx_deriving.show bytestring.ppx))
- (libraries bytestring))
+ (inline_tests (deps (glob_files %{project_root}/test/*.txt)))
+ (libraries bitstring)
+ (preprocess (pps ppx_inline_test ppx_deriving.show ppx_bitstring)))
