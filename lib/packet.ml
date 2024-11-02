@@ -24,18 +24,29 @@ and question = {
   name: string;                 (* domain name, will be encoded as sequence of labels *)
   rtype: record_type;
 }
-and record = 
-  | A of preamble * ip_addr
+and record =
+  | Unknown of {preamble: preamble}
+  | A of { preamble: preamble; ip: ip_addr }
+  | NS of { preamble: preamble; host: host }
+  | CNAME of { preamble: preamble; host: host }
+  | MX of { preamble: preamble; domain: host; priority: int }
+  | AAAA of { preamble: preamble; ipv6: ip_addr_v6 }
 and preamble = {
   name: string;                 (* domain name as sequence of labels *)
   rtype: record_type;           
   ttl: int;                     (* how long a record can be cached *)
   len: int;                     (* length of record type specific data *)
 }
-and record_type =
-  | UNKNOWN of int
-  | A_TYPE
+and host = string
 and ip_addr = int * int * int * int
+and ip_addr_v6 = int * int * int * int * int * int * int * int
+and record_type =
+  | Unknown' of int
+  | A'
+  | NS'
+  | CNAME'
+  | MX'
+  | AAAA'
 and result_code =
   | NoError
   | Formerr
@@ -63,14 +74,21 @@ let make_question_packet id question =
 module IntSet = Set.Make(Int)
 [@@deriving show]
 
-let rec read_qname (buf: Buffer.t) =
-  let* is_jump = is_jump buf in
-  if is_jump then
+let rec read_qname ?(name="") ?(separator="") buf =
+  let* next = Buffer.get buf in
+  match next with
+  | '\xC0' ->                   (* jump *)
     let* position = get_jump buf IntSet.empty in
-    let* _, name = read_name { buf with position } "" "" in
-    ok({ buf with position = buf.position + 2}, name)
-  else
-    read_name buf "" ""
+    let* _buf, name = read_qname { buf with position } ~name:name ~separator:separator in
+    ok ((Buffer.step buf 2), name)
+  | '\x00' -> ok ((Buffer.step buf 1), name) (* end of qname *)
+  | _ ->
+    let* buf, length = Buffer.read_u8 buf in
+    (* let length = Char.code length in *)
+    let* part = Buffer.get_range buf buf.position length in
+    let part = separator ^ (String.of_bytes part) in
+    let buf = { buf with position = buf.position + length } in
+    read_qname buf ~name:(name ^ part) ~separator:"."
 and get_jump buf jumps =
   let* is_jump = is_jump buf in
   if is_jump then
@@ -87,16 +105,6 @@ and is_jump buf =
   let* next = Buffer.get_u16 buf in
   let hint = (Char.code '\xC0') lsl 8 in
   ok ((next land hint) = hint)
-and read_name buf name separator =
-  let* buf, next = Buffer.read buf in
-  match next with
-  | '\x00' -> ok (buf, name)
-  | length ->
-    let length = Char.code length in
-    let* part = Buffer.get_range buf buf.position length in
-    let part = separator ^ (String.of_bytes part) in
-    let buf = { buf with position = buf.position + length } in
-    read_name buf (name ^ part) "."
 
 let rec read buf =
   let* buf, id = Buffer.read_u16 buf in
@@ -139,15 +147,12 @@ and rcode_of_int = function
   | 5 -> ok Refused
   | other -> error ("Invalid result code: " ^ (string_of_int other))
 
-and read_questions buf count =
-  let rec aux buf count questions =
-    match count with
-    | 0 -> ok (buf, questions)
-    | n -> 
-      let* buf, question = read_question buf in
-      aux buf (n - 1) (questions @ [question])
-  in
-  aux buf count []
+and read_questions ?(questions=[]) buf count =
+  match count with
+  | 0 -> ok (buf, questions)
+  | n -> 
+    let* buf, question = read_question buf in
+    read_questions buf (n - 1) ~questions:(questions @ [question])
 
 and read_question buf =
   let* buf, name = read_qname buf in
@@ -155,21 +160,22 @@ and read_question buf =
   let* buf, _class = Buffer.read_u16 buf in
   ok (buf, { name; rtype })
 
-and read_records buf count =
-  let rec aux buf count records =
-    match count with
-    | 0 -> ok (buf, records)
-    | n -> 
-      let* buf, record = read_record buf in
-      aux buf (n - 1) (records @ [record])
-  in
-  aux buf count []
+and read_records ?(records=[]) buf count =
+  match count with
+  | 0 -> ok (buf, records)
+  | n -> 
+    let* buf, record = read_record buf in
+    read_records buf (n - 1) ~records:(records @ [record])
 
 and read_record_type buf =
   let* buf, rtype = Buffer.read_u16 buf in
   match rtype with
-  | 1 -> ok (buf, A_TYPE)
-  | other -> ok (buf, UNKNOWN other)
+  | 1 -> ok (buf, A')
+  | 2 -> ok (buf, NS')
+  | 5 -> ok (buf, CNAME')
+  | 15 -> ok (buf, MX')
+  | 28 -> ok (buf, AAAA')
+  | other -> ok (buf, Unknown' other)
 
 and read_record buf =
   let* buf, name = read_qname buf in
@@ -177,15 +183,48 @@ and read_record buf =
   let* buf, _class = Buffer.read_u16 buf in
   let* buf, ttl = Buffer.read_u32 buf in
   let* buf, len = Buffer.read_u16 buf in
-  let* buf, ip = read_ip_address buf in (* FIXME this only works for A records *)
-  ok (buf, A({name; rtype; ttl; len}, ip))
+  let preamble = {name; rtype; ttl; len} in
+  read_record_specific buf preamble
+
+and read_record_specific buf (preamble: preamble) =
+  match preamble.rtype with
+  | Unknown' _ ->
+    let buf = Buffer.step buf preamble.len in
+    ok (buf, Unknown({ preamble }))
+  | A' ->
+    let* buf, ip = read_ip_address buf in
+    ok (buf, A({ preamble; ip}))
+  | AAAA' ->
+    let* buf, ipv6 = read_ip_address_v6 buf in
+    ok (buf, AAAA({ preamble; ipv6}))
+  | NS' ->
+    let* buf, host = read_qname buf in
+    ok (buf, NS({ preamble; host }))
+  | CNAME' ->
+    let* buf, host = read_qname buf in
+    ok (buf, CNAME({ preamble; host }))
+  | MX' ->
+    let* buf, priority = Buffer.read_u16 buf in
+    let* buf, domain = read_qname buf in
+    ok (buf, MX({ preamble; priority; domain }))
 
 and read_ip_address buf =
-  let* buf, part1 = Buffer.read_u8 buf in
-  let* buf, part2 = Buffer.read_u8 buf in
-  let* buf, part3 = Buffer.read_u8 buf in
-  let* buf, part4 = Buffer.read_u8 buf in
-  ok (buf, (part1, part2, part3, part4))
+  let* buf, p1 = Buffer.read_u8 buf in
+  let* buf, p2 = Buffer.read_u8 buf in
+  let* buf, p3 = Buffer.read_u8 buf in
+  let* buf, p4 = Buffer.read_u8 buf in
+  ok (buf, (p1, p2, p3, p4))
+
+and read_ip_address_v6 buf =
+  let* buf, p1 = Buffer.read_u16 buf in
+  let* buf, p2 = Buffer.read_u16 buf in
+  let* buf, p3 = Buffer.read_u16 buf in
+  let* buf, p4 = Buffer.read_u16 buf in
+  let* buf, p5 = Buffer.read_u16 buf in
+  let* buf, p6 = Buffer.read_u16 buf in
+  let* buf, p7 = Buffer.read_u16 buf in
+  let* buf, p8 = Buffer.read_u16 buf in
+  ok (buf, (p1, p2, p3, p4, p5, p6, p7, p8))
 
 let rec write packet =
   let header = write_header packet in
@@ -227,7 +266,7 @@ and write_question question =
   let%bitstring bits = {| name:len:bitstring; rtype:16; rclass:16 |} in
   bits
 
-and write_qname name =
+and write_qname name =          (* FIXME not saving space by searching for previous names *)
   let parts = String.split_on_char '.' name in
   let qname = List.fold_left
     (fun acc part ->
@@ -247,9 +286,21 @@ and write_records records =
 
 and write_record record =
   match record with
-  | A (preamble, ip) -> (write_preamble preamble) ^^ (write_ip ip)
+  | A {preamble; ip} -> (write_preamble preamble) ^^ (write_ip ip)
+  | AAAA {preamble; ipv6} -> (write_preamble preamble) ^^ (write_ip_v6 ipv6)
+  | NS {preamble; host} | CNAME {preamble; host} ->
+    let host = write_qname host in
+    let preamble = { preamble with len = Bitstring.bitstring_length host } in
+    (write_preamble preamble) ^^ host
+  | MX {preamble; domain; priority} ->
+    let domain = write_qname domain in
+    let domain_len = Bitstring.bitstring_length domain in
+    let%bitstring bits = {| priority:16; domain:domain_len:bitstring |} in
+    let preamble = { preamble with len = Bitstring.bitstring_length bits } in
+    (write_preamble preamble) ^^ bits
+  | Unknown _ -> Bitstring.empty_bitstring (* Skip unknown records *)
 
-and write_preamble (preamble: preamble) =
+and write_preamble preamble =
   let name = write_qname preamble.name in
   let name_len = Bitstring.bitstring_length name in
   let rtype = int_of_record_type preamble.rtype in
@@ -263,6 +314,12 @@ and write_ip ip =
   let p1, p2, p3, p4 = ip in
   let%bitstring bits = {| p1:8; p2:8; p3:8; p4:8 |} in
   bits
+
+and write_ip_v6 ipv6 =
+  let p1, p2, p3, p4, p5, p6, p7, p8 = ipv6 in
+  let%bitstring bits =
+    {| p1:16; p2:16; p3:16; p4:16; p5:16; p6:16; p7:16; p8:16 |} in
+  bits
           
 and bool_of_packet_type typ =
   match typ with
@@ -271,6 +328,10 @@ and bool_of_packet_type typ =
 
 and int_of_record_type typ =
   match typ with
-  | A_TYPE -> 1
-  | UNKNOWN other -> other
+  | A' -> 1
+  | NS' -> 2
+  | CNAME' -> 5
+  | MX' -> 15
+  | AAAA' -> 28
+  | Unknown' other -> other
 
