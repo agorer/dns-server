@@ -1,14 +1,7 @@
 module Server = Dns_server.Server
-module Packet = Dns_server.Packet
-
-let assert_no_error result =
-  let open Result in
-  match result with
-  | Ok _ -> ()
-  | Error msg -> print_endline msg
 
 let () =
-  let qname = "yahoo.com" in
-  let rtype = Packet.MX' in
-  let result = Server.find qname rtype in
-  assert_no_error result
+  let socket = Unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
+  let my_addr = Server.make_addr "0.0.0.0" 2053 in
+  let () = Unix.bind socket my_addr in
+  Server.wait_for_queries socket

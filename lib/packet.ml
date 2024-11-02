@@ -1,5 +1,6 @@
 open Result
-
+open Errors
+    
 let (let*) = Result.bind
 
 let (^^) a b = Bitstring.concat [a; b]
@@ -47,13 +48,6 @@ and record_type =
   | CNAME'
   | MX'
   | AAAA'
-and result_code =
-  | NoError
-  | Formerr
-  | ServFail
-  | NxDomain
-  | NoTimp
-  | Refused
 and packet_type =
   | Query
   | Response
@@ -65,11 +59,35 @@ let make_question_packet id question =
       id;
       qr = Query;
       opcode = 0;
-      aa = false; rd = true; ra = false;
-      rcode = NoError;
+      aa = false; rd = true; ra = true;
+      rcode = Errors.NoError;
     };
     questions = [question]; answers = []; authorities = []; additionals = []
-}
+  }
+
+let make_error_packet id error =
+  {
+    header = {
+      id;
+      qr = Query;
+      opcode = 0;
+      aa = false; rd = true; ra = true;
+      rcode = error;
+    };
+    questions = []; answers = []; authorities = []; additionals = []
+  }
+
+let make_response_packet id question answers =
+  {
+    header = {
+      id;
+      qr = Query;
+      opcode = 0;
+      aa = false; rd = true; ra = true;
+      rcode = NoError;
+    };
+    questions = [question]; answers; authorities = []; additionals = []
+  }
 
 module IntSet = Set.Make(Int)
 [@@deriving show]
@@ -96,7 +114,7 @@ and get_jump buf jumps =
     let hint = (Char.code '\xC0') lsl 8 in
     let position = next lxor hint in
     if IntSet.mem position jumps then
-      error "Cycle detected when reading qname"
+      error (Message "Cycle detected when reading qname")
     else
       get_jump { buf with position } (IntSet.add position jumps)
   else
@@ -136,7 +154,7 @@ and read_flags buf =
   match%bitstring flags with
   | {| qr:1; opcode:4; aa:1; tc:1; rd:1; ra:1; z:3; rcode:4 |} ->
     ok (buf, qr, opcode, aa, tc, rd, ra, z, rcode)
-  | {| _ |} -> error "Invalid flags in packet"
+  | {| _ |} -> error (Message "Invalid flags in packet")
 
 and rcode_of_int = function
   | 0 -> ok NoError
@@ -145,7 +163,7 @@ and rcode_of_int = function
   | 3 -> ok NxDomain
   | 4 -> ok NoTimp
   | 5 -> ok Refused
-  | other -> error ("Invalid result code: " ^ (string_of_int other))
+  | other -> error (Message ("Invalid result code: " ^ (string_of_int other)))
 
 and read_questions ?(questions=[]) buf count =
   match count with

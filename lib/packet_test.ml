@@ -1,5 +1,6 @@
 open Result
 open Packet
+open Errors
     
 let setup_buffer input =
   Buffer.{
@@ -12,10 +13,10 @@ let assert_name result name =
   | Ok (_, qname) -> qname = name
   | Error _ -> false
 
-let assert_error result expected_msg =
+let assert_error result expected =
   match result with
   | Ok _ -> print_endline "ok"; false
-  | Error msg -> msg = expected_msg
+  | Error error -> error = expected
 
 let%test "qname without jumps" =
   let input = "\x06google\x03com\x00" in
@@ -34,7 +35,7 @@ let%test "qname with cycle" =
   let input = "\xC0\x02\xC0\x00" in
   let buffer = setup_buffer input in
   let result = Packet.read_qname buffer in
-  assert_error result "Cycle detected when reading qname"
+  assert_error result (Message "Cycle detected when reading qname")
 
 
 let setup path =
@@ -44,7 +45,7 @@ let setup path =
 
 let assert_no_error result =
   match result with
-  | Error msg -> failwith msg
+  | Error error -> failwith (Errors.show_packet_error error)
   | Ok (_buf, packet) -> packet
 
 let%test "read packet" =
