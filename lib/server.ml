@@ -3,21 +3,28 @@ open Errors
 
 let (let*) = Result.bind
 
-let make_addr ip port =
+let make_addr (p1, p2, p3, p4) port =
+  let parts = [(string_of_int p1); (string_of_int p2); (string_of_int p3); (string_of_int p4)] in
+  let ip = String.concat "." parts  in
   Unix.ADDR_INET ((Unix.inet_addr_of_string ip), port)
+
+let pp_addr addr =
+  match addr with
+  | Unix.ADDR_INET (addr, _port) -> Unix.string_of_inet_addr addr
+  | _ -> "???"
     
-let lookup name rtype =
+let lookup name rtype server =
+  let () = Format.printf "- attemping lookup of %s with ns %s\n%!" name (pp_addr server)  in
   let open Packet in
   let question = { name; rtype } in
   let query_packet = make_question_packet 65432 question in
   let buf = Packet.write query_packet in
   let socket = Unix.socket Unix.PF_INET Unix.SOCK_DGRAM 0 in
-  let my_addr = make_addr "0.0.0.0" 43210 in
+  let my_addr = make_addr (0,0,0,0) 43210 in
   let () = Unix.bind socket my_addr in
   let flags = [] in
-  let support_server = make_addr "8.8.8.8" 53 in
   let _count =
-    Unix.sendto socket buf.data 0 (Bytes.length buf.data) flags support_server in
+    Unix.sendto socket buf.data 0 (Bytes.length buf.data) flags server in
   let bytes_recv = Bytes.create 512 in
   let _count, _addr = Unix.recvfrom socket bytes_recv 0 512 flags in
   let buf = Buffer.{ data = bytes_recv; position = 0 } in
@@ -25,6 +32,30 @@ let lookup name rtype =
   let () = Unix.close socket in
   ok (response_packet)
 
+let root_server = make_addr (198,41,0,4) 53
+
+let rec recursive_lookup ?(server=root_server) name rtype =
+  let open Errors in
+  let* response = lookup name rtype server in
+  let rcode = response.header.rcode in
+  if (not (List.is_empty response.answers) && rcode = NoError) || rcode = NxDomain then
+    ok response
+  else
+    let new_ns = Packet.get_resolved_ns response name in
+    match new_ns with
+    | Some ns -> recursive_lookup ~server:(make_addr ns 53) name rtype
+    | None ->
+      let unresolved_ns = Packet.get_unresolved_ns response name in
+      match unresolved_ns with
+      | Some ns ->
+        (let* ns_response = recursive_lookup ns Packet.A' in
+         let ns = Packet.random_a ns_response in
+         match ns with
+         | Some ns -> recursive_lookup ~server:(make_addr ns 53) name rtype
+         | None -> ok response)
+      | None -> ok response
+          
+    
 let rec wait_for_queries socket =
   let src_addr, bytes_recv = receive_query socket in
   let _ = match handle_query bytes_recv with
@@ -45,7 +76,8 @@ and handle_query bytes_recv =
   let buf = Buffer.{ data = bytes_recv; position = 0 } in
   let* _buf, request = Packet.read buf in
   let* question = extract_question request in
-  let* packet = lookup question.name question.rtype in
+  let () = print_endline ("Received query: " ^ (Packet.show_question question)) in
+  let* packet = recursive_lookup question.name question.rtype in
   let out_packet =
     Packet.make_response_packet request.header.id question packet.answers in
   let buf = Packet.write out_packet in
@@ -77,5 +109,4 @@ and send_error socket id error src_addr =
   let packet = Packet.make_error_packet id code in
   let buf = Packet.write packet in
   let _ = Unix.sendto socket buf.data 0 (Bytes.length buf.data) [] src_addr in ()
-
-
+  

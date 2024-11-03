@@ -353,3 +353,61 @@ and int_of_record_type typ =
   | AAAA' -> 28
   | Unknown' other -> other
 
+let extract_host record =
+  match record with
+  | NS { host; _} -> Some host
+  | _ -> None
+
+let extract_addr record =
+  match record with
+  | A { ip; _} -> Some ip
+  | _ -> None
+
+let pick_first l =
+  let options = l |> List.filter Option.is_some |> List.map Option.get in
+  if List.is_empty options then None
+  else Some (List.hd options)
+
+let random_a packet =
+  packet.answers
+  |> List.map extract_addr
+  |> pick_first
+
+let rec get_ns packet qname =
+  packet.authorities
+  |> List.filter is_ns
+  |> List.filter (is_authoritative qname)
+and is_ns authoritative =
+  match authoritative with
+  | NS _ -> true
+  | _ -> false
+and is_authoritative qname authoritative =
+  match authoritative with
+  | NS { preamble; _ } -> String.ends_with ~suffix:preamble.name qname
+  | _ -> false
+      
+let rec get_resolved_ns packet qname =
+  get_ns packet qname
+  |> List.map (resolve_to_address packet)
+  |> List.flatten
+  |> pick_first
+and resolve_to_address packet authority =
+  let host = extract_host authority in
+  packet.additionals
+  |> List.filter (match_domain_to host)
+  |> List.map extract_addr
+and match_domain_to host record =
+  match host with
+  | Some host -> (
+      match record with
+      | A { preamble; _ } -> preamble.name = host
+      | _ -> false
+    )
+  | None -> false
+
+let get_unresolved_ns packet qname =
+  get_ns packet qname
+  |> List.map extract_host
+  |> pick_first
+
+
